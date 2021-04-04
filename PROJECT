@@ -1,0 +1,16 @@
+domain: openshift.io
+layout: go.kubebuilder.io/v2
+repo: github.com/openshift/ptp-operator
+resources:
+- group: ptp.openshift.io
+  kind: PtpOperatorConfig
+  version: v1
+- group: ptp.openshift.io
+  kind: NodePtpDevice
+  version: v1
+- group: ptp.openshift.io
+  kind: PtpConfig
+  version: v1
+version: 3-alpha
+plugins:
+  go.operator-sdk.io/v2-alpha: {}

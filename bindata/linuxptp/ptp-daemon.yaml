@@ -1,0 +1,179 @@
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: linuxptp-daemon
+  namespace: openshift-ptp
+  annotations:
+    release.openshift.io/version: "{{.ReleaseVersion}}"
+spec:
+  selector:
+    matchLabels:
+      app: linuxptp-daemon
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app: linuxptp-daemon
+    spec:
+      hostNetwork: true
+      hostPID: true
+      nodeSelector:
+        kubernetes.io/os: linux
+      tolerations:
+      - operator: Exists
+      serviceAccountName: linuxptp-daemon
+      containers:
+      - name: kube-rbac-proxy
+        image: {{.KubeRbacProxy}}
+        imagePullPolicy: IfNotPresent
+        args:
+          - --logtostderr
+          - --secure-listen-address=:8443
+          - --tls-cipher-suites=TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,TLS_RSA_WITH_AES_128_CBC_SHA256,TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256,TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256
+          - --upstream=http://127.0.0.1:9091/
+          - --tls-private-key-file=/etc/metrics/tls.key
+          - --tls-cert-file=/etc/metrics/tls.crt
+        ports:
+          - containerPort: 8443
+            name: https
+        resources:
+          requests:
+            cpu: 10m
+            memory: 20Mi
+        terminationMessagePolicy: FallbackToLogsOnError
+        volumeMounts:
+          - name: linuxptp-certs
+            mountPath: /etc/metrics
+            readOnly: True
+      - name: linuxptp-daemon-container
+        securityContext:
+          privileged: true
+        image: {{.Image}}
+        command: [ "/bin/bash", "-c", "--" ]
+        args: [ "/usr/local/bin/ptp --alsologtostderr -v 10" ]
+        imagePullPolicy: IfNotPresent
+        resources:
+          requests:
+            cpu: 20m
+            memory: 50Mi
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        volumeMounts:
+        - name: config-volume
+          mountPath: /etc/linuxptp
+        - name: socket-dir
+          mountPath: /var/run
+      volumes:
+        - name: config-volume
+          configMap:
+            name: ptp-configmap
+        - name: linuxptp-certs
+          secret:
+            secretName: linuxptp-daemon-secret
+        - name: socket-dir
+          hostPath:
+            path: /var/run/ptp
+            type: DirectoryOrCreate
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  labels:
+    name: monitor-ptp
+  name: monitor-ptp
+  namespace: openshift-ptp
+spec:
+  endpoints:
+    - interval: 10s
+      port: metrics
+      bearerTokenFile: "/var/run/secrets/kubernetes.io/serviceaccount/token"
+      scheme: "https"
+      tlsConfig:
+        caFile: "/etc/prometheus/configmaps/serving-certs-ca-bundle/service-ca.crt"
+        serverName: "ptp-monitor-service.{{.Namespace}}.svc"
+  jobLabel: app
+  namespaceSelector:
+    matchNames:
+      - openshift-ptp
+  selector:
+    matchLabels:
+      name: ptp-monitor-service
+---
+apiVersion: v1
+kind: Service
+metadata:
+  annotations:
+    prometheus.io/scrape: "true"
+    service.alpha.openshift.io/serving-cert-secret-name: linuxptp-daemon-secret
+  labels:
+    name: ptp-monitor-service
+  name:  ptp-monitor-service
+  namespace: openshift-ptp
+spec:
+  selector:
+    app: linuxptp-daemon
+  clusterIP: None
+  ports:
+    - name: metrics
+      port: 8443
+      targetPort: https
+  sessionAffinity: None
+  type: ClusterIP
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: prometheus-k8s
+  namespace: openshift-ptp
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - services
+      - endpoints
+      - pods
+    verbs:
+      - get
+      - list
+      - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: prometheus-k8s
+  namespace: openshift-ptp
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: prometheus-k8s
+subjects:
+  - kind: ServiceAccount
+    name: prometheus-k8s
+    namespace: openshift-monitoring
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  labels:
+    prometheus: k8s
+    role: alert-rules
+  name: ptp-rules
+  namespace: openshift-ptp
+spec:
+  groups:
+    - name: ptp.rules
+      rules:
+        - alert: NodeOutOfPtpSync
+          annotations:
+            message: |
+              All nodes should have ptp sync offset lower then 100
+          expr: |
+            openshift_ptp_max_offset_from_master > 100 or openshift_ptp_max_offset_from_master < -100
+          for: 2m
+          labels:
+            severity: warning

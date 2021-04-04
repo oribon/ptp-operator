@@ -1,0 +1,5 @@
+## This file is auto-generated, do not modify ##
+resources:
+- ptp.openshift.io_v1_ptpoperatorconfig.yaml
+- ptp.openshift.io_v1_nodeptpdevice.yaml
+- ptp.openshift.io_v1_ptpconfig.yaml

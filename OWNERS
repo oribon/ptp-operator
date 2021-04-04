@@ -1,0 +1,20 @@
+reviewers:
+  - zshi-redhat
+  - pliurh
+  - dougbtv
+  - dcbw
+  - squeed
+  - fepan
+  - s1061123
+  - SchSeba
+approvers:
+  - zshi-redhat
+  - pliurh
+  - dougbtv
+  - dcbw
+  - squeed
+  - fepan
+  - s1061123
+  - SchSeba
+component: "Networking"
+subcomponent: "ptp"

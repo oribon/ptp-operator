@@ -1,5 +1,5 @@
 /*
-
+Copyright 2021.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -14,9 +14,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package v1 contains API Schema definitions for the ptp.openshift.io v1 API group
-// +kubebuilder:object:generate=true
-// +groupName=ptp.openshift.io
+// Package v1 contains API Schema definitions for the ptp v1 API group
+//+kubebuilder:object:generate=true
+//+groupName=ptp.openshift.io
 package v1
 
 import (
@@ -28,7 +28,7 @@ var (
 	// GroupVersion is group version used to register these objects
 	GroupVersion = schema.GroupVersion{Group: "ptp.openshift.io", Version: "v1"}
 
-	// SchemeGroupVersion is group version used to register these objects
+	// SchemeGroupVersion is group version used to register these objects ADDED MANUALLY
 	SchemeGroupVersion = schema.GroupVersion{Group: "ptp.openshift.io", Version: "v1"}
 
 	// SchemeBuilder is used to add go types to the GroupVersionKind scheme

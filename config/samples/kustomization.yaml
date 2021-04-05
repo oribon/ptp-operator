@@ -1,5 +1,6 @@
-## This file is auto-generated, do not modify ##
+## Append samples you want in your CSV to this file as resources ##
 resources:
-- ptp.openshift.io_v1_ptpoperatorconfig.yaml
-- ptp.openshift.io_v1_nodeptpdevice.yaml
-- ptp.openshift.io_v1_ptpconfig.yaml
+- ptp_v1_ptpconfig.yaml
+- ptp_v1_nodeptpdevice.yaml
+- ptp_v1_ptpoperatorconfig.yaml
+#+kubebuilder:scaffold:manifestskustomizesamples

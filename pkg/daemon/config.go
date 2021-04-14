@@ -20,13 +20,14 @@ import (
 const (
 	DefaultUpdateInterval = 30
 	DefaultProfilePath    = "/etc/linuxptp"
+	PTP4L_CONF_FILE_PATH  = "/etc/ptp4l.conf"
+	PTP4L_CONF_DIR        = "/ptp4l-conf"
 )
 
 // LinuxPTPUpdate controls whether to update linuxPTP conf
 // and contains linuxPTP conf to be updated. It's rendered
 // and passed to linuxptp instance by daemon.
 type LinuxPTPConfUpdate struct {
-	UpdateCh               chan bool
 	NodeProfiles           []ptpv1.PtpProfile
 	appliedNodeProfileJson []byte
 	defaultPTP4lConfig     []byte
@@ -46,7 +47,7 @@ func NewLinuxPTPConfUpdate() (*LinuxPTPConfUpdate, error) {
 		return nil, fmt.Errorf("failed to read %s: %v", PTP4L_CONF_FILE_PATH, err)
 	}
 
-	return &LinuxPTPConfUpdate{UpdateCh: make(chan bool), defaultPTP4lConfig: defaultPTP4lConfig}, nil
+	return &LinuxPTPConfUpdate{defaultPTP4lConfig: defaultPTP4lConfig}, nil
 }
 
 func (l *LinuxPTPConfUpdate) UpdateConfig(nodeProfilesJson []byte) error {
@@ -58,7 +59,6 @@ func (l *LinuxPTPConfUpdate) UpdateConfig(nodeProfilesJson []byte) error {
 		glog.Info("load profiles")
 		l.appliedNodeProfileJson = nodeProfilesJson
 		l.NodeProfiles = nodeProfiles
-		l.UpdateCh <- true
 
 		return nil
 	}
@@ -74,7 +74,6 @@ func (l *LinuxPTPConfUpdate) UpdateConfig(nodeProfilesJson []byte) error {
 		glog.Info("load profiles using old method")
 		l.appliedNodeProfileJson = nodeProfilesJson
 		l.NodeProfiles = nodeProfiles
-		l.UpdateCh <- true
 
 		return nil
 	}

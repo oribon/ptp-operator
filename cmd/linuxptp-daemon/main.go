@@ -2,19 +2,28 @@ package main
 
 import (
 	"flag"
-	"io/ioutil"
 	"os"
-	"os/signal"
-	"path/filepath"
-	"syscall"
-	"time"
 
 	"github.com/golang/glog"
-	"k8s.io/client-go/kubernetes"
-
 	ptpclient "github.com/openshift/ptp-operator/pkg/client/clientset/versioned"
 	"github.com/openshift/ptp-operator/pkg/daemon"
+	"k8s.io/apimachinery/pkg/runtime"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+
+	"github.com/openshift/ptp-operator/pkg/names"
 )
+
+var (
+	scheme   = runtime.NewScheme()
+	setupLog = ctrl.Log.WithName("setup")
+)
+
+func init() {
+	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+}
 
 type cliParams struct {
 	updateInterval int
@@ -33,91 +42,79 @@ func main() {
 	cp := &cliParams{}
 	flag.Parse()
 	flagInit(cp)
+	var metricsAddr string
+	var enableLeaderElection bool
+	flag.StringVar(&metricsAddr, "metrics-addr", ":9091", "The address the metric endpoint binds to.")
+	flag.BoolVar(&enableLeaderElection, "enable-leader-election", false,
+		"Enable leader election for controller manager. "+
+			"Enabling this will ensure there is only one active controller manager.")
+	flag.Parse()
 
 	glog.Infof("resync period set to: %d [s]", cp.updateInterval)
 	glog.Infof("linuxptp profile path set to: %s", cp.profileDir)
 
-	cfg, err := daemon.GetKubeConfig()
-	if err != nil {
-		glog.Errorf("get kubeconfig failed: %v", err)
-		return
-	}
-	glog.Infof("successfully get kubeconfig")
+	ctrl.SetLogger(zap.New(zap.UseDevMode(true)))
 
-	kubeClient, err := kubernetes.NewForConfig(cfg)
-	if err != nil {
-		glog.Errorf("cannot create new config for kubeClient: %v", err)
-		return
-	}
+	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+		Scheme:             scheme,
+		MetricsBindAddress: metricsAddr,
+		Port:               9443,
+		LeaderElection:     enableLeaderElection,
+		LeaderElectionID:   "ptpdaemon.openshift.io",
+		Namespace:          names.Namespace,
+	})
 
-	ptpClient, err := ptpclient.NewForConfig(cfg)
 	if err != nil {
-		glog.Errorf("cannot create new config for ptpClient: %v", err)
-		return
+		setupLog.Error(err, "unable to start manager")
+		os.Exit(1)
 	}
 
 	// The name of NodePtpDevice CR for this node is equal to the node name
 	nodeName := os.Getenv("NODE_NAME")
 	if nodeName == "" {
-		glog.Error("cannot find NODE_NAME environment variable")
-		return
+		setupLog.Error(err, "cannot find NODE_NAME environment variable")
+		os.Exit(1)
+	}
+
+	daemon.RegisterMetrics(nodeName)
+
+	ptpClient, err := ptpclient.NewForConfig(ctrl.GetConfigOrDie())
+	if err != nil {
+		setupLog.Error(err, "cannot create new config for ptpClient")
+		os.Exit(1)
 	}
 
 	// Run a loop to update the device status
 	go daemon.RunDeviceStatusUpdate(ptpClient, nodeName)
 
-	stopCh := make(chan struct{})
-	defer close(stopCh)
-
 	ptpConfUpdate, err := daemon.NewLinuxPTPConfUpdate()
 	if err != nil {
-		glog.Errorf("failed to create a ptp config update: %v", err)
-		return
+		setupLog.Error(err, "failed to create a ptp config update")
+		os.Exit(1)
 	}
 
-	go daemon.New(
-		nodeName,
-		daemon.PtpNamespace,
-		kubeClient,
-		ptpConfUpdate,
-		stopCh,
-	).Run()
-
-	tickerPull := time.NewTicker(time.Second * time.Duration(cp.updateInterval))
-	defer tickerPull.Stop()
-
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
-
-	daemon.StartMetricsServer("0.0.0.0:9091")
-
-	for {
-		select {
-		case <-tickerPull.C:
-			glog.Infof("ticker pull")
-			nodeProfile := filepath.Join(cp.profileDir, nodeName)
-			if _, err := os.Stat(nodeProfile); err != nil {
-				if os.IsNotExist(err) {
-					glog.Infof("ptp profile doesn't exist for node: %v", nodeName)
-					continue
-				} else {
-					glog.Errorf("error stating node profile %v: %v", nodeName, err)
-					continue
-				}
-			}
-			nodeProfilesJson, err := ioutil.ReadFile(nodeProfile)
-			if err != nil {
-				glog.Errorf("error reading node profile: %v", nodeProfile)
-				continue
-			}
-
-			err = ptpConfUpdate.UpdateConfig(nodeProfilesJson)
-			if err != nil {
-				glog.Errorf("error updating the node configuration using the profiles loaded: %v", err)
-			}
-		case sig := <-sigCh:
-			glog.Info("signal received, shutting down", sig)
-			return
-		}
+	daemonReconciler := &daemon.DaemonReconciler{
+		Client:         mgr.GetClient(),
+		Log:            ctrl.Log.WithName("controllers").WithName("PtpConfigMap"),
+		Scheme:         mgr.GetScheme(),
+		NodeName:       nodeName,
+		ProfileDir:     cp.profileDir,
+		PtpUpdate:      ptpConfUpdate,
+		ProcessManager: &daemon.ProcessManager{},
 	}
+
+	if err = (daemonReconciler).
+		SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "PtpConfigMap")
+		os.Exit(1)
+	}
+
+	defer daemonReconciler.StopAllProcesses()
+
+	setupLog.Info("starting manager")
+	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
+		setupLog.Error(err, "problem running manager")
+		os.Exit(1)
+	}
+
 }

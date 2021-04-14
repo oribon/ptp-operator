@@ -2,24 +2,27 @@ package daemon
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io/ioutil"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/go-logr/logr"
 	"github.com/golang/glog"
-	"k8s.io/client-go/kubernetes"
-
 	ptpv1 "github.com/openshift/ptp-operator/api/v1"
-)
-
-const (
-	PtpNamespace         = "openshift-ptp"
-	PTP4L_CONF_FILE_PATH = "/etc/ptp4l.conf"
-	PTP4L_CONF_DIR       = "/ptp4l-conf"
+	"github.com/openshift/ptp-operator/pkg/names"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
 // ProcessManager manages a set of ptpProcess
@@ -39,63 +42,48 @@ type ptpProcess struct {
 	cmd             *exec.Cmd
 }
 
-// Daemon is the main structure for linuxptp instance.
-// It contains all the necessary data to run linuxptp instance.
-type Daemon struct {
-	// node name where daemon is running
-	nodeName  string
-	namespace string
-
-	// kubeClient allows interaction with Kubernetes, including the node we are running on.
-	kubeClient *kubernetes.Clientset
-
-	ptpUpdate *LinuxPTPConfUpdate
-
-	processManager *ProcessManager
-
-	// channel ensure LinuxPTP.Run() exit when main function exits.
-	// stopCh is created by main function and passed by Daemon via NewLinuxPTP()
-	stopCh <-chan struct{}
+type DaemonReconciler struct {
+	client.Client
+	Log            logr.Logger
+	Scheme         *runtime.Scheme
+	NodeName       string
+	ProfileDir     string
+	PtpUpdate      *LinuxPTPConfUpdate
+	ProcessManager *ProcessManager
 }
 
-// NewLinuxPTP is called by daemon to generate new linuxptp instance
-func New(
-	nodeName string,
-	namespace string,
-	kubeClient *kubernetes.Clientset,
-	ptpUpdate *LinuxPTPConfUpdate,
-	stopCh <-chan struct{},
-) *Daemon {
-	RegisterMetrics(nodeName)
+func (r *DaemonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (reconcile.Result, error) {
+	reqLogger := r.Log.WithValues("Request.Namespace", req.Namespace, "Request.Name", req.Name)
+	reqLogger.Info("Reconciling ConfigMap")
 
-	return &Daemon{
-		nodeName:       nodeName,
-		namespace:      namespace,
-		kubeClient:     kubeClient,
-		ptpUpdate:      ptpUpdate,
-		processManager: &ProcessManager{},
-		stopCh:         stopCh,
+	err := r.applyNodePTPProfiles()
+	if err != nil {
+		glog.Errorf("linuxPTP apply node profile failed: %v", err)
+		return reconcile.Result{}, err
 	}
+	return reconcile.Result{}, nil
 }
 
-// Run in a for loop to listen for any LinuxPTPConfUpdate changes
-func (dn *Daemon) Run() {
-	for {
-		select {
-		case <-dn.ptpUpdate.UpdateCh:
-			err := dn.applyNodePTPProfiles()
-			if err != nil {
-				glog.Errorf("linuxPTP apply node profile failed: %v", err)
-			}
-		case <-dn.stopCh:
-			for _, p := range dn.processManager.process {
-				if p != nil {
-					cmdStop(p)
-					p = nil
-				}
-			}
-			glog.Infof("linuxPTP stop signal received, existing..")
-			return
+func (r *DaemonReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	return ctrl.NewControllerManagedBy(mgr).
+		For(&corev1.ConfigMap{}).
+		WithEventFilter(predicate.Funcs{
+			CreateFunc: func(e event.CreateEvent) bool {
+				return r.shouldReconcileObject(e.Object)
+			},
+			UpdateFunc: func(e event.UpdateEvent) bool {
+				return r.shouldReconcileObject(e.ObjectNew)
+			},
+		}).
+		Complete(r)
+}
+
+func (r *DaemonReconciler) StopAllProcesses() {
+	for _, p := range r.ProcessManager.process {
+		if p != nil {
+			glog.Infof("stopping process.... %+v", p)
+			cmdStop(p)
+			p = nil
 		}
 	}
 }
@@ -106,16 +94,10 @@ func printWhenNotNil(p *string, description string) {
 	}
 }
 
-func (dn *Daemon) applyNodePTPProfiles() error {
+func (r *DaemonReconciler) applyNodePTPProfiles() error {
 	glog.Infof("in applyNodePTPProfiles")
 
-	for _, p := range dn.processManager.process {
-		if p != nil {
-			glog.Infof("stopping process.... %+v", p)
-			cmdStop(p)
-			p = nil
-		}
-	}
+	r.StopAllProcesses()
 
 	// All process should have been stopped,
 	// clear process in process manager.
@@ -123,7 +105,7 @@ func (dn *Daemon) applyNodePTPProfiles() error {
 	// the underlying slice to the garbage
 	// collector (assuming there are no other
 	// references).
-	dn.processManager.process = nil
+	r.ProcessManager.process = nil
 
 	// TODO:
 	// compare nodeProfile with previous config,
@@ -131,8 +113,8 @@ func (dn *Daemon) applyNodePTPProfiles() error {
 
 	glog.Infof("updating NodePTPProfiles to:")
 	runID := 0
-	for _, profile := range dn.ptpUpdate.NodeProfiles {
-		err := dn.applyNodePtpProfile(runID, &profile)
+	for _, profile := range r.PtpUpdate.NodeProfiles {
+		err := r.applyNodePtpProfile(runID, &profile)
 		if err != nil {
 			return err
 		}
@@ -140,7 +122,7 @@ func (dn *Daemon) applyNodePTPProfiles() error {
 	}
 
 	// Start all the process
-	for _, p := range dn.processManager.process {
+	for _, p := range r.ProcessManager.process {
 		if p != nil {
 			time.Sleep(1 * time.Second)
 			go cmdRun(p)
@@ -149,13 +131,13 @@ func (dn *Daemon) applyNodePTPProfiles() error {
 	return nil
 }
 
-func (dn *Daemon) applyNodePtpProfile(runID int, nodeProfile *ptpv1.PtpProfile) error {
+func (r *DaemonReconciler) applyNodePtpProfile(runID int, nodeProfile *ptpv1.PtpProfile) error {
 	// This add the flags needed for monitor
 	addFlagsForMonitor(nodeProfile)
 
 	socketPath := fmt.Sprintf("/var/run/ptp4l.%d.socket", runID)
 	// This will create the configuration needed to run the ptp4l and phc2sys
-	dn.addProfileConfig(socketPath, nodeProfile)
+	r.addProfileConfig(socketPath, nodeProfile)
 
 	glog.Infof("------------------------------------")
 	printWhenNotNil(nodeProfile.Name, "Profile Name")
@@ -166,7 +148,7 @@ func (dn *Daemon) applyNodePtpProfile(runID int, nodeProfile *ptpv1.PtpProfile) 
 	glog.Infof("------------------------------------")
 
 	if nodeProfile.Phc2sysOpts != nil {
-		dn.processManager.process = append(dn.processManager.process, &ptpProcess{
+		r.ProcessManager.process = append(r.ProcessManager.process, &ptpProcess{
 			name:   "phc2sys",
 			iface:  *nodeProfile.Interface,
 			exitCh: make(chan bool),
@@ -182,7 +164,7 @@ func (dn *Daemon) applyNodePtpProfile(runID int, nodeProfile *ptpv1.PtpProfile) 
 			return fmt.Errorf("failed to write the configuration file named %s: %v", configPath, err)
 		}
 
-		dn.processManager.process = append(dn.processManager.process, &ptpProcess{
+		r.ProcessManager.process = append(r.ProcessManager.process, &ptpProcess{
 			name:            "ptp4l",
 			iface:           *nodeProfile.Interface,
 			ptp4lConfigPath: configPath,
@@ -196,11 +178,11 @@ func (dn *Daemon) applyNodePtpProfile(runID int, nodeProfile *ptpv1.PtpProfile) 
 	return nil
 }
 
-func (dn *Daemon) addProfileConfig(socketPath string, nodeProfile *ptpv1.PtpProfile) {
+func (r *DaemonReconciler) addProfileConfig(socketPath string, nodeProfile *ptpv1.PtpProfile) {
 	// TODO: later implement a merge capability
 	if nodeProfile.Ptp4lConf == nil || *nodeProfile.Ptp4lConf == "" {
 		// We need to copy this to another variable because is a pointer
-		config := string(dn.ptpUpdate.defaultPTP4lConfig)
+		config := string(r.PtpUpdate.defaultPTP4lConfig)
 		nodeProfile.Ptp4lConf = &config
 	}
 
@@ -279,7 +261,6 @@ func cmdRun(p *ptpProcess) {
 		glog.Errorf("cmdRun() error waiting for %s: %v", p.name, err)
 		return
 	}
-	return
 }
 
 // cmdStop stops ptpProcess launched by cmdRun
@@ -310,4 +291,40 @@ func cmdStop(p *ptpProcess) {
 
 	<-p.exitCh
 	glog.Infof("Process %d terminated", p.cmd.Process.Pid)
+}
+
+func (r *DaemonReconciler) shouldReconcileObject(o client.Object) bool {
+	cm, ok := o.(*corev1.ConfigMap)
+	if !ok {
+		return false
+	}
+
+	if cm.Name != names.DefaultPTPConfigMapName {
+		return false
+	}
+
+	nodeProfile := filepath.Join(r.ProfileDir, r.NodeName)
+	if _, err := os.Stat(nodeProfile); err != nil {
+		if os.IsNotExist(err) {
+			glog.Infof("ptp profile doesn't exist for node: %v", r.NodeName)
+			return false
+		} else {
+			glog.Errorf("error stating node profile %v: %v", r.NodeName, err)
+			return false
+		}
+	}
+
+	nodeProfilesJson, err := ioutil.ReadFile(nodeProfile)
+
+	if err != nil {
+		glog.Errorf("error reading node profile: %v", nodeProfile)
+		return false
+	}
+
+	err = r.PtpUpdate.UpdateConfig(nodeProfilesJson)
+	if err != nil {
+		glog.Errorf("error updating the node configuration using the profiles loaded: %v", err)
+	}
+
+	return true
 }

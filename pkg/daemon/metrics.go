@@ -16,6 +16,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"sigs.k8s.io/controller-runtime/pkg/metrics"
+
 	ptpv1 "github.com/openshift/ptp-operator/api/v1"
 )
 
@@ -67,14 +69,14 @@ var registerMetrics sync.Once
 
 func RegisterMetrics(nodeName string) {
 	registerMetrics.Do(func() {
-		prometheus.MustRegister(OffsetFromMaster)
-		prometheus.MustRegister(MaxOffsetFromMaster)
-		prometheus.MustRegister(FrequencyAdjustment)
-		prometheus.MustRegister(DelayFromMaster)
+		metrics.Registry.MustRegister(OffsetFromMaster)
+		metrics.Registry.MustRegister(MaxOffsetFromMaster)
+		metrics.Registry.MustRegister(FrequencyAdjustment)
+		metrics.Registry.MustRegister(DelayFromMaster)
 
 		// Including these stats kills performance when Prometheus polls with multiple targets
-		prometheus.Unregister(prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}))
-		prometheus.Unregister(prometheus.NewGoCollector())
+		metrics.Registry.Unregister(prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}))
+		metrics.Registry.Unregister(prometheus.NewGoCollector())
 
 		NodeName = nodeName
 	})

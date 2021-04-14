@@ -9,6 +9,7 @@ import (
 
 	ptpv1 "github.com/openshift/ptp-operator/api/v1"
 	ptpclient "github.com/openshift/ptp-operator/pkg/client/clientset/versioned"
+	"github.com/openshift/ptp-operator/pkg/names"
 )
 
 func GetDevStatusUpdate(nodePTPDev *ptpv1.NodePtpDevice) (*ptpv1.NodePtpDevice, error) {
@@ -38,7 +39,7 @@ func runDeviceStatusUpdate(ptpClient *ptpclient.Clientset, nodeName string) {
 
 	// Assume NodePtpDevice CR for this particular node
 	// is already created manually or by PTP-Operator.
-	ptpDev, err := ptpClient.PtpV1().NodePtpDevices(PtpNamespace).Get(context.TODO(), nodeName, metav1.GetOptions{})
+	ptpDev, err := ptpClient.PtpV1().NodePtpDevices(names.Namespace).Get(context.TODO(), nodeName, metav1.GetOptions{})
 	if err != nil {
 		glog.Errorf("failed to get NodePtpDevice CR for node %s: %v", nodeName, err)
 	}
@@ -50,7 +51,7 @@ func runDeviceStatusUpdate(ptpClient *ptpclient.Clientset, nodeName string) {
 	}
 
 	// Update NodePtpDevice CR
-	_, err = ptpClient.PtpV1().NodePtpDevices(PtpNamespace).UpdateStatus(context.TODO(), ptpDev, metav1.UpdateOptions{})
+	_, err = ptpClient.PtpV1().NodePtpDevices(names.Namespace).UpdateStatus(context.TODO(), ptpDev, metav1.UpdateOptions{})
 	if err != nil {
 		glog.Errorf("failed to update Node PTP device CR: %v", err)
 	}

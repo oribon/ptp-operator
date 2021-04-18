@@ -118,6 +118,7 @@ func createDefaultOperatorConfig(cfg *rest.Config) error {
 	config := &ptpv1.PtpOperatorConfig{
 		Spec: ptpv1.PtpOperatorConfigSpec{
 			DaemonNodeSelector: map[string]string{},
+			LogLevel:           2,
 		},
 	}
 	err = c.Get(context.TODO(), types.NamespacedName{

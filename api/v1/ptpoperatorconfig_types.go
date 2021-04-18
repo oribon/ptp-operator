@@ -29,6 +29,11 @@ type PtpOperatorConfigSpec struct {
 	// Important: Run "make" to regenerate code after modifying this file
 
 	DaemonNodeSelector map[string]string `json:"daemonNodeSelector"`
+	// Flag to control the log verbose level of the operator. Set to '0' to show only the basic logs. And set to '2' to show all the available logs.
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=2
+	// +kubebuilder:default:=2
+	LogLevel int `json:"logLevel,omitempty"`
 }
 
 // PtpOperatorConfigStatus defines the observed state of PtpOperatorConfig

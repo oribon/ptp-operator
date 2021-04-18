@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/golang/glog"
+	ptpv1 "github.com/openshift/ptp-operator/api/v1"
 	ptpclient "github.com/openshift/ptp-operator/pkg/client/clientset/versioned"
 	"github.com/openshift/ptp-operator/pkg/daemon"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -23,6 +24,7 @@ var (
 
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+	utilruntime.Must(ptpv1.AddToScheme(scheme))
 }
 
 type cliParams struct {
@@ -106,6 +108,15 @@ func main() {
 	if err = (daemonReconciler).
 		SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "PtpConfigMap")
+		os.Exit(1)
+	}
+
+	if err = (&daemon.PtpOperatorConfigReconciler{
+		Client: mgr.GetClient(),
+		Log:    ctrl.Log.WithName("controllers").WithName("PtpOperatorConfig"),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "PtpOperatorConfig")
 		os.Exit(1)
 	}
 
